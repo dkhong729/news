@@ -52,6 +52,15 @@ function ExpandableText({ text, max = 220 }) {
   );
 }
 
+const VC_SOURCE_CATEGORY_OPTIONS = [
+  { key: 'accelerator', label: '加速器 / 育成中心' },
+  { key: 'gov_subsidy', label: '政府補助 / 獎勵' },
+  { key: 'gov_award', label: '政府獎項名單' },
+  { key: 'incubator_space', label: '空間進駐 / 創育機構' },
+  { key: 'exhibitor_list', label: '展會參展商名單' },
+  { key: 'exhibit_schedule', label: '展覽檔期 / 展期表' },
+];
+
 export default function DDPage() {
   const base = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000';
   const { user, logout, authHeaders } = useAuth();
@@ -76,6 +85,7 @@ export default function DDPage() {
   const [vcDiscoverySources, setVcDiscoverySources] = useState(
     'https://appworks.tw/,https://garageplus.asia/,https://www.tta.tw/,https://meet.bnext.com.tw/,https://smartcity.org.tw/,https://www.energytaiwan.com.tw/,https://www.twtc.com.tw/zh-tw/exhibitionSchedule,https://www.tainex.com.tw/service/exhibitionschedule'
   );
+  const [vcSourceCategories, setVcSourceCategories] = useState(['accelerator', 'gov_subsidy', 'exhibitor_list']);
   const [vcExtraUrls, setVcExtraUrls] = useState('');
 
   const [vcDirectCompanyName, setVcDirectCompanyName] = useState('');
@@ -149,6 +159,12 @@ export default function DDPage() {
       return '你的帳號目前缺少「公司 DD」權限（vc_scout_run）。請重新登入一次，或請管理員檢查角色權限。';
     }
     return data?.detail || fallback;
+  };
+
+  const toggleVcSourceCategory = (key) => {
+    setVcSourceCategories((prev) => (
+      prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]
+    ));
   };
 
   const loadPersisted = async () => {
@@ -240,6 +256,7 @@ export default function DDPage() {
           user_id: user.userId,
           target_count: 50,
           source_urls: parseList(vcDiscoverySources),
+          source_categories: vcSourceCategories,
         }),
       });
       const scoutData = await scoutRes.json();
@@ -250,7 +267,7 @@ export default function DDPage() {
       if (scoutData?.candidates?.length) setSelectedCandidateId(scoutData.candidates[0].id);
 
       (scoutData?.trace || []).slice(0, 12).forEach((t) => {
-        pushLog(`${t.source}：掃描 ${t.scanned}，納入 ${t.accepted}`);
+        pushLog(`${t.source}：掃描 ${t.scanned ?? 0}，納入 ${t.accepted ?? 0}`);
       });
 
       setStatus(`完成：產生 ${scoutData?.generated || 0} 個候選團隊（來源網站 ${scoutData?.used_sources?.length || 0} 個）`);
@@ -786,6 +803,27 @@ export default function DDPage() {
 
         <FieldLabel label="來源網站（逗號分隔）" help="若空白將使用系統內建台灣加速器/活動來源。" />
         <input value={vcDiscoverySources} onChange={(e) => setVcDiscoverySources(e.target.value)} />
+
+        <FieldLabel
+          label="來源分類（功能一）"
+          help="用於控制 VC Scout 額外啟用哪些資料倉來源：加速器、政府補助/獎項、展會參展商與展期。"
+        />
+        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', marginBottom: 8 }}>
+          {VC_SOURCE_CATEGORY_OPTIONS.map((opt) => (
+            <label key={opt.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={vcSourceCategories.includes(opt.key)}
+                onChange={() => toggleVcSourceCategory(opt.key)}
+                style={{ width: 'auto' }}
+              />
+              <span>{opt.label}</span>
+            </label>
+          ))}
+        </div>
+        <p className="muted">
+          已選：{vcSourceCategories.length ? vcSourceCategories.join(', ') : '未選（將使用預設 all）'}
+        </p>
 
         <div className="btnRow">
           <button className="btn" onClick={runCompanyScout} disabled={running}>開始執行</button>

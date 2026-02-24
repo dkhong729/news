@@ -3,6 +3,7 @@
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -11,10 +12,12 @@ from bs4 import BeautifulSoup
 from .db import (
     clear_vc_candidates,
     get_vc_profile,
+    list_gov_resource_records,
     list_vc_candidates,
     mark_vc_shortlist,
     upsert_vc_candidate,
 )
+from .gov_resource_scout import run_gov_resource_scout
 from .http_client import fetch_url
 
 
@@ -50,6 +53,33 @@ DEFAULT_COMPANY_DISCOVERY_SOURCES = [
     "https://www.twtc.com.tw/zh-tw/exhibitionSchedule",
     "https://www.tainex.com.tw/service/exhibitionschedule",
 ]
+
+SOURCE_CATEGORY_PRESETS = {
+    "accelerator": [
+        "https://appworks.tw/",
+        "https://garageplus.asia/",
+        "https://www.tta.tw/",
+        "https://www.taccplus.com/",
+        "https://meet.bnext.com.tw/",
+        "https://starfabx.com/",
+        "https://www.sparklabstaiwan.com/",
+        "https://startupgarage.ntu.edu.tw/",
+        "https://www.ntupreneur.ntu.edu.tw/",
+        "https://iaps.nycu.edu.tw/",
+    ],
+    "gov_subsidy": [
+        "https://startup.sme.gov.tw/",
+        "https://www.sme.gov.tw/",
+        "https://www.taiwanarena.tech/",
+    ],
+    "exhibitor_list": [
+        "https://smartcity.org.tw/",
+        "https://www.energytaiwan.com.tw/",
+        "https://www.chanchao.com.tw/healthcare/",
+        "https://www.twtc.com.tw/zh-tw/exhibitionSchedule",
+        "https://www.tainex.com.tw/service/exhibitionschedule",
+    ],
+}
 
 SOURCE_AUTHORITY = {
     "appworks.tw": 1.4,
@@ -608,17 +638,67 @@ def _extract_candidates_from_source(
     return {"items": results, "trace": trace}
 
 
-def _source_list(custom_sources: List[str]) -> List[str]:
+def _source_list(custom_sources: List[str], source_categories: Optional[List[str]] = None) -> List[str]:
     if custom_sources:
         cleaned = [x.strip() for x in custom_sources if x and x.strip()]
         if cleaned:
             return cleaned[:30]
+
+    if source_categories:
+        out: List[str] = []
+        seen = set()
+        for cat in source_categories:
+            for u in SOURCE_CATEGORY_PRESETS.get(str(cat), []):
+                if u in seen:
+                    continue
+                seen.add(u)
+                out.append(u)
+        if out:
+            return out[:40]
 
     env_sources = [x.strip() for x in os.getenv("VC_SCOUT_SOURCES", "").split(",") if x.strip()]
     if env_sources:
         return env_sources[:30]
 
     return DEFAULT_COMPANY_DISCOVERY_SOURCES
+
+
+def _gov_record_to_candidate(record: Dict[str, Any], thesis_keywords: List[str], preferred_sectors: List[str]) -> Optional[Dict[str, Any]]:
+    name = _sanitize_name(str(record.get("company_name") or record.get("organization_name") or record.get("event_name") or ""))
+    if len(name) < 2:
+        return None
+    source_url = str(record.get("url") or record.get("source_url") or "").strip()
+    if not source_url:
+        return None
+    summary_parts = [
+        str(record.get("program_name") or ""),
+        str(record.get("award_name") or record.get("subsidy_name") or ""),
+        str(record.get("date_text") or ""),
+    ]
+    summary = "｜".join([x for x in summary_parts if x])[:600]
+    combined = _text(name, summary, source_url, str(record.get("source_category") or ""))
+    thesis_bonus = _match_score(combined, thesis_keywords)
+    signal_bonus = _company_signal_score(combined) + 1.0
+    authority_bonus = min(1.5, float(record.get("score") or 6.5) / 7.0)
+    score = round(max(0.0, min(10.0, 4.2 + thesis_bonus * 0.7 + signal_bonus * 0.5 + authority_bonus)), 2)
+    return {
+        "name": name,
+        "summary": summary or f"政府/展會名單來源：{record.get('source_category')}",
+        "source_url": source_url,
+        "source_type": str(record.get("source_domain") or "gov_resource"),
+        "stage": "unknown",
+        "sector": _guess_sector(combined, preferred_sectors),
+        "score": score,
+        "rationale": f"政府/展會結構化名單來源（{record.get('source_category')}）",
+        "contact_email": None,
+        "raw_meta": {
+            "gov_resource_record_id": record.get("id"),
+            "source_category": record.get("source_category"),
+            "program_name": record.get("program_name"),
+            "award_name": record.get("award_name"),
+            "subsidy_name": record.get("subsidy_name"),
+        },
+    }
 
 
 def _government_query_list() -> List[str]:
@@ -702,7 +782,12 @@ def _extract_candidates_from_query(
     }
 
 
-def run_vc_scout(user_id: int, target_count: int = 50, source_urls: Optional[List[str]] = None) -> Dict[str, Any]:
+def run_vc_scout(
+    user_id: int,
+    target_count: int = 50,
+    source_urls: Optional[List[str]] = None,
+    source_categories: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     profile = get_vc_profile(user_id)
     if not profile:
         raise ValueError("尚未建立 VC profile")
@@ -716,7 +801,7 @@ def run_vc_scout(user_id: int, target_count: int = 50, source_urls: Optional[Lis
 
     preferred_sectors = [str(x) for x in (profile.get("preferred_sectors") or []) if str(x).strip()]
 
-    source_list = _source_list(source_urls or [])
+    source_list = _source_list(source_urls or [], source_categories=source_categories or [])
     raw_candidates: List[Dict[str, Any]] = []
     traces: List[Dict[str, Any]] = []
 
@@ -730,8 +815,28 @@ def run_vc_scout(user_id: int, target_count: int = 50, source_urls: Optional[Lis
         raw_candidates.extend(packed["items"])
         traces.append(packed["trace"])
 
-    if os.getenv("VC_SCOUT_ENABLE_GOV_QUERY_PACK", "1") == "1":
+    gov_enabled_for_this_run = os.getenv("VC_SCOUT_ENABLE_GOV_QUERY_PACK", "1") == "1"
+    gov_categories = [c for c in (source_categories or []) if c in {"gov_subsidy", "gov_award", "incubator_space", "exhibitor_list", "exhibit_schedule"}]
+    if gov_enabled_for_this_run and (not source_categories or gov_categories):
         query_cap = int(os.getenv("VC_SCOUT_GOV_QUERY_CAP", "12"))
+        # 先把政府/展會結構化名單入庫（5年）
+        try:
+            gov_run = run_gov_resource_scout(
+                years_back=5,
+                categories=(gov_categories or None),
+                include_search=True,
+            )
+            traces.append(
+                {
+                    "source": "gov_resource_scout",
+                    "status": "ok",
+                    "scanned": sum(int(x.get("scanned") or 0) for x in gov_run.get("trace", []) if isinstance(x, dict)),
+                    "accepted": len(gov_run.get("sample_records") or []),
+                    "categories": gov_run.get("categories", []),
+                }
+            )
+        except Exception as exc:
+            traces.append({"source": "gov_resource_scout", "status": f"failed:{exc}", "scanned": 0, "accepted": 0})
         for query in _government_query_list()[:query_cap]:
             packed = _extract_candidates_from_query(
                 query=query,
@@ -741,6 +846,26 @@ def run_vc_scout(user_id: int, target_count: int = 50, source_urls: Optional[Lis
             )
             raw_candidates.extend(packed["items"])
             traces.append(packed["trace"])
+
+        # 再從結構化表直接匯入候選，優先拿近5年
+        try:
+            structured_rows = list_gov_resource_records(
+                limit=400,
+                year_from=datetime.now().year - 4,
+                source_category=(gov_categories[0] if (len(gov_categories) == 1) else None),
+            )
+            structured_added = 0
+            for row in structured_rows:
+                if gov_categories and str(row.get("source_category")) not in set(gov_categories):
+                    continue
+                cand = _gov_record_to_candidate(row, thesis_keywords, preferred_sectors)
+                if not cand:
+                    continue
+                raw_candidates.append(cand)
+                structured_added += 1
+            traces.append({"source": "gov_resource_records", "status": "ok", "scanned": len(structured_rows), "accepted": structured_added})
+        except Exception as exc:
+            traces.append({"source": "gov_resource_records", "status": f"failed:{exc}", "scanned": 0, "accepted": 0})
 
     by_key: Dict[str, Dict[str, Any]] = {}
     by_name: Dict[str, Dict[str, Any]] = {}
@@ -770,6 +895,7 @@ def run_vc_scout(user_id: int, target_count: int = 50, source_urls: Optional[Lis
     return {
         "profile_id": int(profile["id"]),
         "used_sources": source_list,
+        "source_categories": source_categories or ["all"],
         "gov_query_pack_enabled": os.getenv("VC_SCOUT_ENABLE_GOV_QUERY_PACK", "1") == "1",
         "generated": len(ranked),
         "trace": traces,

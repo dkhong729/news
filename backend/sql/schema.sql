@@ -257,6 +257,33 @@ CREATE TABLE IF NOT EXISTS vc_profiles (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS gov_resource_records (
+  id SERIAL PRIMARY KEY,
+  record_type TEXT NOT NULL CHECK (record_type IN ('award','subsidy','incubator','exhibitor','exhibit_schedule')),
+  source_category TEXT NOT NULL CHECK (source_category IN ('gov_award','gov_subsidy','incubator_space','exhibitor_list','exhibit_schedule')),
+  program_name TEXT,
+  event_name TEXT,
+  company_name TEXT,
+  organization_name TEXT,
+  year INTEGER,
+  award_name TEXT,
+  subsidy_name TEXT,
+  date_text TEXT,
+  booth_no TEXT,
+  url TEXT,
+  source_url TEXT NOT NULL,
+  source_domain TEXT,
+  region TEXT NOT NULL DEFAULT 'taiwan',
+  score REAL NOT NULL DEFAULT 0,
+  raw_meta JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE NULLS NOT DISTINCT (record_type, source_category, program_name, event_name, company_name, organization_name, year, url, source_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gov_resource_records_type_year ON gov_resource_records(record_type, year DESC);
+CREATE INDEX IF NOT EXISTS idx_gov_resource_records_category ON gov_resource_records(source_category, score DESC);
+
 CREATE TABLE IF NOT EXISTS vc_candidates (
   id SERIAL PRIMARY KEY,
   profile_id INTEGER NOT NULL REFERENCES vc_profiles(id) ON DELETE CASCADE,

@@ -22,6 +22,7 @@ from .db import (
     consume_unsubscribe_token,
     consume_oauth_state,
     count_recent_auth_attempts,
+    count_gov_resource_records,
     create_vc_meeting_request,
     create_oauth_state,
     create_or_update_user,
@@ -42,12 +43,14 @@ from .db import (
     get_user_by_id,
     init_db,
     list_events,
+    list_gov_resource_records,
     list_insights,
     list_subscribers,
     log_email_delivery,
     log_auth_attempt,
     mark_user_email_invalid,
     cleanup_low_quality_content,
+    purge_listing_events,
     set_user_daily_subscription,
     set_candidate_meeting_status,
     set_candidate_outreach_status,
@@ -71,6 +74,7 @@ from .dd_reports import (
     run_grad_lab_dd,
     shortlist_grad_labs,
 )
+from .gov_resource_scout import run_gov_resource_scout
 from .pipeline_runner import run_pipeline_job
 from .scheduler import run_scheduler
 from .localizer import localize_existing_content
@@ -147,6 +151,13 @@ class VCScoutPayload(BaseModel):
     user_id: int
     target_count: int = Field(default=50, ge=20, le=80)
     source_urls: List[str] = Field(default_factory=list)
+    source_categories: List[str] = Field(default_factory=list)
+
+
+class GovResourceScoutPayload(BaseModel):
+    years_back: int = Field(default=5, ge=1, le=10)
+    categories: List[str] = Field(default_factory=list)
+    include_search: bool = True
 
 
 class VCShortlistPayload(BaseModel):
@@ -623,7 +634,9 @@ def admin_localize_content(request: Request, payload: LocalizePayload) -> Dict[s
 @app.post("/admin/maintenance/cleanup")
 def admin_cleanup_content(request: Request) -> Dict[str, Any]:
     _require(request, "admin_write")
+    listing_deleted = purge_listing_events()
     result = cleanup_low_quality_content()
+    result["events_deleted_listing_pages"] = listing_deleted
     audit = content_quality_audit(limit=10)
     return {"cleanup": result, "audit": audit}
 
@@ -926,9 +939,46 @@ def vc_scout_run(request: Request, payload: VCScoutPayload) -> Dict[str, Any]:
     ctx = _require(request, "vc_scout_run")
     assert_user_scope(ctx, payload.user_id)
     try:
-        return run_vc_scout(payload.user_id, payload.target_count, payload.source_urls)
+        return run_vc_scout(
+            payload.user_id,
+            payload.target_count,
+            payload.source_urls,
+            source_categories=payload.source_categories,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/admin/gov-resources/run")
+def admin_run_gov_resources(request: Request, payload: GovResourceScoutPayload) -> Dict[str, Any]:
+    _require(request, "admin_write")
+    return run_gov_resource_scout(
+        years_back=payload.years_back,
+        categories=payload.categories or None,
+        include_search=payload.include_search,
+    )
+
+
+@app.get("/admin/gov-resources")
+def admin_list_gov_resources(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    record_type: Optional[str] = None,
+    source_category: Optional[str] = None,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+) -> Dict[str, Any]:
+    _require(request, "admin_read")
+    items = list_gov_resource_records(
+        limit=limit,
+        offset=offset,
+        record_type=record_type,
+        source_category=source_category,
+        year_from=year_from,
+        year_to=year_to,
+    )
+    return {"count": count_gov_resource_records(), "items": items}
 
 
 @app.get("/vc/scout/candidates")

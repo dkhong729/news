@@ -1104,6 +1104,25 @@ def content_quality_audit(limit: int = 20, max_title_len: int = 220) -> Dict[str
                 """
                 SELECT COUNT(*) AS cnt
                 FROM events
+                WHERE char_length(COALESCE(title,'')) > %s;
+                """,
+                (max_title_len,),
+            )
+            report["event_title_too_long"] = int((cur.fetchone() or {}).get("cnt") or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM events
+                WHERE COALESCE(title,'') ~ '[�]' OR lower(COALESCE(title,'')) LIKE '%%Ã%%';
+                """
+            )
+            report["event_title_mojibake"] = int((cur.fetchone() or {}).get("cnt") or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM events
                 WHERE char_length(COALESCE(title,'')) > %s OR COALESCE(title,'') ~ '[�]' OR lower(COALESCE(title,'')) LIKE '%%Ã%%';
                 """,
                 (max_title_len,),
@@ -1114,11 +1133,39 @@ def content_quality_audit(limit: int = 20, max_title_len: int = 220) -> Dict[str
                 """
                 SELECT COUNT(*) AS cnt
                 FROM normalized_items
+                WHERE char_length(COALESCE(title,'')) > %s;
+                """,
+                (max_title_len + 40,),
+            )
+            report["insight_title_too_long"] = int((cur.fetchone() or {}).get("cnt") or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM normalized_items
+                WHERE COALESCE(title,'') ~ '[�]' OR lower(COALESCE(title,'')) LIKE '%%Ã%%';
+                """
+            )
+            report["insight_title_mojibake"] = int((cur.fetchone() or {}).get("cnt") or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM normalized_items
                 WHERE char_length(COALESCE(title,'')) > %s OR COALESCE(title,'') ~ '[�]' OR lower(COALESCE(title,'')) LIKE '%%Ã%%';
                 """,
                 (max_title_len + 40,),
             )
             report["insight_title_issues"] = int((cur.fetchone() or {}).get("cnt") or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM events
+                WHERE COALESCE(url, '') ~* '(seminar_list|/list|/calendar|/category|/tag/|/search)';
+                """
+            )
+            report["listing_event_count"] = int((cur.fetchone() or {}).get("cnt") or 0)
 
             cur.execute(
                 """
@@ -1145,7 +1192,93 @@ def content_quality_audit(limit: int = 20, max_title_len: int = 220) -> Dict[str
                 (max_title_len + 40, limit),
             )
             report["insight_samples"] = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT id, title, url, score
+                FROM events
+                WHERE COALESCE(url, '') ~* '(seminar_list|/list|/calendar|/category|/tag/|/search)'
+                ORDER BY updated_at DESC NULLS LAST
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            report["listing_event_samples"] = cur.fetchall()
     return report
+
+
+def upsert_gov_resource_record(item: Dict[str, Any]) -> int:
+    sql = """
+    INSERT INTO gov_resource_records (
+      record_type, source_category, program_name, event_name, company_name, organization_name, year,
+      award_name, subsidy_name, date_text, booth_no, url, source_url, source_domain, region, score, raw_meta
+    )
+    VALUES (
+      %(record_type)s, %(source_category)s, %(program_name)s, %(event_name)s, %(company_name)s, %(organization_name)s, %(year)s,
+      %(award_name)s, %(subsidy_name)s, %(date_text)s, %(booth_no)s, %(url)s, %(source_url)s, %(source_domain)s, %(region)s, %(score)s, %(raw_meta)s
+    )
+    ON CONFLICT (record_type, source_category, program_name, event_name, company_name, organization_name, year, url, source_url)
+    DO UPDATE SET
+      source_domain = EXCLUDED.source_domain,
+      region = EXCLUDED.region,
+      score = EXCLUDED.score,
+      raw_meta = EXCLUDED.raw_meta,
+      updated_at = NOW()
+    RETURNING id;
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, _adapt_params(item))
+            row = cur.fetchone()
+        conn.commit()
+    return int((row or {}).get("id") or 0)
+
+
+def list_gov_resource_records(
+    limit: int = 200,
+    offset: int = 0,
+    record_type: Optional[str] = None,
+    source_category: Optional[str] = None,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    where_parts: List[str] = []
+    params: List[Any] = []
+    if record_type:
+        where_parts.append("record_type = %s")
+        params.append(record_type)
+    if source_category:
+        where_parts.append("source_category = %s")
+        params.append(source_category)
+    if year_from is not None:
+        where_parts.append("(year IS NULL OR year >= %s)")
+        params.append(year_from)
+    if year_to is not None:
+        where_parts.append("(year IS NULL OR year <= %s)")
+        params.append(year_to)
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    sql = f"""
+    SELECT id, record_type, source_category, program_name, event_name, company_name, organization_name, year,
+           award_name, subsidy_name, date_text, booth_no, url, source_url, source_domain, region, score, raw_meta,
+           created_at, updated_at
+    FROM gov_resource_records
+    {where_sql}
+    ORDER BY year DESC NULLS LAST, score DESC NULLS LAST, updated_at DESC
+    LIMIT %s OFFSET %s;
+    """
+    params.extend([limit, offset])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return cur.fetchall()
+
+
+def count_gov_resource_records() -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM gov_resource_records;")
+            row = cur.fetchone()
+            return int((row or {}).get("cnt") or 0)
 
 
 def create_oauth_state(state: str, ip: Optional[str], ttl_minutes: int = 10) -> None:
