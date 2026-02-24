@@ -15,7 +15,6 @@ function TitlePreview({ title, max = 88 }) {
           {open ? '收合標題' : '查看更多標題'}
         </button>
       ) : null}
-      {tooLong && open ? <p className="muted">{value}</p> : null}
     </div>
   );
 }
