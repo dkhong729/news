@@ -1,0 +1,16 @@
+﻿fastapi==0.111.0
+uvicorn==0.30.1
+requests==2.32.3
+feedparser==6.0.11
+beautifulsoup4==4.12.3
+psycopg[binary]==3.2.3
+python-dotenv==1.0.1
+langchain==0.2.12
+langchain-openai==0.1.20
+passlib[bcrypt]==1.7.4
+email-validator==2.2.0
+python-multipart==0.0.9
+pypdf==4.3.1
+redis==5.2.1
+sentry-sdk[fastapi]==2.20.0
+reportlab==4.2.5

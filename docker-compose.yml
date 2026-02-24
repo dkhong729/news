@@ -1,0 +1,21 @@
+﻿services:
+  db:
+    image: postgres:16
+    container_name: ai_pulse_db
+    restart: unless-stopped
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: ai_pulse
+    volumes:
+      - ai_pulse_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_pulse"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+volumes:
+  ai_pulse_data:
